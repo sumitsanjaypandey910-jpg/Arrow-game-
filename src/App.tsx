@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useCallback } from 'react';
 import { Trophy, Shield } from 'lucide-react';
 import { HeaderBar } from './components/HeaderBar';
 import { ElevateArrowIcon } from './components/ElevateArrowIcon';
@@ -14,41 +14,36 @@ import backdropImg from './assets/images/night_road_backdrop_1790198787282.jpg';
 
 export default function App() {
   const [view, setView] = useState<'MENU' | 'PLAYING'>('MENU');
-  const [currentLevel, setCurrentLevel] = useState<number>(1);
-  const [userStats, setUserStats] = useState<UserStats>(loadUserStats);
+  const [userStats, setUserStats] = useState<UserStats>(() => loadUserStats());
+  const [currentLevel, setCurrentLevel] = useState<number>(() => {
+    const stats = loadUserStats();
+    return stats.highestLevelUnlocked > 1 ? stats.highestLevelUnlocked : 1;
+  });
   const [isHelpOpen, setIsHelpOpen] = useState<boolean>(false);
   const [isSoundMuted, setIsSoundMuted] = useState<boolean>(sound.getMuted());
   const [lastResult, setLastResult] = useState<GameResult | null>(null);
 
-  // Sync state on load
-  useEffect(() => {
-    const stats = loadUserStats();
-    setUserStats(stats);
-    if (stats.highestLevelUnlocked > 1) {
-      setCurrentLevel(stats.highestLevelUnlocked);
-    }
-  }, []);
-
-  const handleToggleSound = () => {
+  const handleToggleSound = useCallback(() => {
     const muted = sound.toggleMute();
     setIsSoundMuted(muted);
-  };
+  }, []);
 
-  const handleStartGame = (lvl?: number) => {
+  const handleStartGame = useCallback((lvl?: number) => {
     sound.playTap();
     if (lvl) setCurrentLevel(lvl);
     setLastResult(null);
     setView('PLAYING');
-  };
+  }, []);
 
-  const handleGameOver = (result: GameResult) => {
-    const isNewBest = result.score > userStats.bestScore;
-    const finalResult = { ...result, isNewBest };
-    const updatedStats = saveUserStats(userStats, finalResult);
-    setUserStats(updatedStats);
-    setLastResult(finalResult);
-    // Stay in PLAYING with modal or switch to summary
-  };
+  const handleGameOver = useCallback((result: GameResult) => {
+    setUserStats((prevStats) => {
+      const isNewBest = result.score > prevStats.bestScore;
+      const finalResult = { ...result, isNewBest };
+      const updated = saveUserStats(prevStats, finalResult);
+      setLastResult(finalResult);
+      return updated;
+    });
+  }, []);
 
   const currentConfig =
     LEVEL_CONFIGS.find((l) => l.level === currentLevel) || LEVEL_CONFIGS[0];

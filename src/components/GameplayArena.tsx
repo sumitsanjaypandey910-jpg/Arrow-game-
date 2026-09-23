@@ -50,7 +50,7 @@ export const GameplayArena: React.FC<GameplayArenaProps> = ({
   const isInputLockedRef = useRef<boolean>(false);
   const urgentTickPlayedRef = useRef<boolean>(false);
   const timeoutHandledRef = useRef<boolean>(false);
-  const rafIdRef = useRef<number | null>(null);
+  const isGameOverCalledRef = useRef<boolean>(false);
 
   // Reset per-stimulus timer and gauge
   const resetQuestionTimer = useCallback(() => {
@@ -82,28 +82,24 @@ export const GameplayArena: React.FC<GameplayArenaProps> = ({
     }
   }, [countdown, resetQuestionTimer]);
 
-  // Per-stimulus urgency timer countdown loop (generates urge to answer quickly!)
+  // Per-stimulus urgency timer countdown interval (generates urge to answer quickly!)
   useEffect(() => {
-    if (countdown !== null || isPaused || !timerEnabled) {
-      if (rafIdRef.current) cancelAnimationFrame(rafIdRef.current);
+    if (countdown !== null || isPaused || !timerEnabled || timeLeft <= 0) {
       return;
     }
 
-    const updateGauge = () => {
-      if (isInputLockedRef.current || timeoutHandledRef.current) {
-        rafIdRef.current = requestAnimationFrame(updateGauge);
-        return;
-      }
+    const interval = setInterval(() => {
+      if (isInputLockedRef.current || timeoutHandledRef.current) return;
 
       const elapsed = performance.now() - stimulusStartTimeRef.current;
       const remaining = Math.max(0, maxQuestionTimeMs - elapsed);
-      const percent = (remaining / maxQuestionTimeMs) * 100;
+      const percent = Math.max(0, (remaining / maxQuestionTimeMs) * 100);
 
       setQuestionRemainingMs(remaining);
       setGaugePercent(percent);
 
       // Play soft urgent tick sound when entering critical zone (< 28%)
-      if (percent <= 28 && !urgentTickPlayedRef.current && remaining > 50) {
+      if (percent <= 28 && !urgentTickPlayedRef.current && remaining > 60) {
         sound.playUrgentTick();
         urgentTickPlayedRef.current = true;
       }
@@ -131,77 +127,80 @@ export const GameplayArena: React.FC<GameplayArenaProps> = ({
           setAnimState(null);
           isInputLockedRef.current = false;
         }, 360);
-      } else {
-        rafIdRef.current = requestAnimationFrame(updateGauge);
       }
-    };
+    }, 40);
 
-    rafIdRef.current = requestAnimationFrame(updateGauge);
-
-    return () => {
-      if (rafIdRef.current) cancelAnimationFrame(rafIdRef.current);
-    };
+    return () => clearInterval(interval);
   }, [
     countdown,
     isPaused,
     timerEnabled,
+    timeLeft,
     maxQuestionTimeMs,
     config.level,
     stimulus.targetDirection,
     resetQuestionTimer,
   ]);
 
-  // Main 50-second gameplay clock
+  // Main 50-second round clock interval
   useEffect(() => {
     if (countdown !== null || isPaused) return;
 
-    if (timeLeft <= 0) {
-      // Game Over
-      const totalAnswered = correctCount + errorCount;
-      const accuracy = totalAnswered > 0 ? Math.round((correctCount / totalAnswered) * 100) : 0;
-      const avgReaction =
-        reactionTimesRef.current.length > 0
-          ? Math.round(
-              reactionTimesRef.current.reduce((a, b) => a + b, 0) /
-                reactionTimesRef.current.length
-            )
-          : 0;
-      const fastestReaction =
-        reactionTimesRef.current.length > 0
-          ? Math.min(...reactionTimesRef.current)
-          : 0;
-
-      const isLevelPassed = score >= config.targetScore;
-
-      const result: GameResult = {
-        score,
-        level: config.level,
-        isLevelPassed,
-        totalAnswered,
-        correctCount,
-        errorCount,
-        timeoutsCount,
-        accuracy,
-        avgReactionMs: avgReaction,
-        fastestReactionMs: fastestReaction,
-        maxStreak,
-        concentrationXP: Math.round(score * 0.04) + correctCount * 2,
-        visualSpeedXP: Math.round(score * 0.05) + Math.max(0, 100 - Math.round(avgReaction / 10)),
-        isNewBest: false, // Calculated by caller
-      };
-
-      onGameOver(result);
-      return;
-    }
-
     const interval = setInterval(() => {
-      setTimeLeft((prev) => prev - 1);
+      setTimeLeft((prev) => {
+        if (prev <= 1) {
+          clearInterval(interval);
+          return 0;
+        }
+        return prev - 1;
+      });
     }, 1000);
 
     return () => clearInterval(interval);
+  }, [countdown, isPaused]);
+
+  // Trigger Game Over ONCE when round time expires
+  useEffect(() => {
+    if (countdown !== null || timeLeft > 0 || isGameOverCalledRef.current) return;
+    isGameOverCalledRef.current = true;
+
+    // Game Over stats calculation
+    const totalAnswered = correctCount + errorCount;
+    const accuracy = totalAnswered > 0 ? Math.round((correctCount / totalAnswered) * 100) : 0;
+    const avgReaction =
+      reactionTimesRef.current.length > 0
+        ? Math.round(
+            reactionTimesRef.current.reduce((a, b) => a + b, 0) /
+              reactionTimesRef.current.length
+          )
+        : 0;
+    const fastestReaction =
+      reactionTimesRef.current.length > 0
+        ? Math.min(...reactionTimesRef.current)
+        : 0;
+
+    const isLevelPassed = score >= config.targetScore;
+
+    const result: GameResult = {
+      score,
+      level: config.level,
+      isLevelPassed,
+      totalAnswered,
+      correctCount,
+      errorCount,
+      timeoutsCount,
+      accuracy,
+      avgReactionMs: avgReaction,
+      fastestReactionMs: fastestReaction,
+      maxStreak,
+      concentrationXP: Math.round(score * 0.04) + correctCount * 2,
+      visualSpeedXP: Math.round(score * 0.05) + Math.max(0, 100 - Math.round(avgReaction / 10)),
+      isNewBest: false,
+    };
+
+    onGameOver(result);
   }, [
     countdown,
-    isPaused,
     timeLeft,
     correctCount,
     errorCount,
@@ -237,8 +236,10 @@ export const GameplayArena: React.FC<GameplayArenaProps> = ({
         setMaxStreak((prev) => Math.max(prev, newStreak));
         setCorrectCount((c) => c + 1);
 
+        const elapsed = performance.now() - stimulusStartTimeRef.current;
+        const remaining = Math.max(0, maxQuestionTimeMs - elapsed);
         const currentGauge = timerEnabled
-          ? Math.max(0, Math.min(100, (questionRemainingMs / maxQuestionTimeMs) * 100))
+          ? Math.max(0, Math.min(100, (remaining / maxQuestionTimeMs) * 100))
           : 50;
 
         const { points, bonus } = calculatePoints(reactionMs, newStreak, currentGauge);
@@ -282,7 +283,6 @@ export const GameplayArena: React.FC<GameplayArenaProps> = ({
       stimulus,
       streak,
       timerEnabled,
-      questionRemainingMs,
       maxQuestionTimeMs,
       config.level,
       resetQuestionTimer,
